@@ -1,129 +1,84 @@
 import telebot
-import sqlite3
-from datetime import datetime, timedelta
+from telebot import types
+from datetime import date, timedelta
 import matplotlib.pyplot as plt
-import pandas as pd
-from io import BytesIO
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+import os
 
-BOT_TOKEN = "8249235733:AAFcyDukXENtAUpH8WPNg6aux8ljiM4zlls"
-bot = telebot.TeleBot(BOT_TOKEN)
+from database import *
 
-conn = sqlite3.connect("expenses.db", check_same_thread=False)
-cursor = conn.cursor()
+TOKEN = '8249235733:AAFcyDukXENtAUpH8WPNg6aux8ljiM4zlls'
+bot = telebot.TeleBot(TOKEN)
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS expenses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    category TEXT,
-    amount REAL,
-    date TEXT
-)
-''')
-conn.commit()
+init_db()
 
-def parse_expense(text):
-    try:
-        parts = text.strip().split()
-        amount = float(parts[-1])
-        category = " ".join(parts[:-1]) if len(parts) > 1 else "Інше"
-        return category.capitalize(), amount
-    except:
-        return None, None
-
-def get_markup():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(
-        KeyboardButton('Витратив сьогодні'),
-        KeyboardButton('Витратив за тиждень'),
-        KeyboardButton('Витратив за місяць')
-    )
-    markup.row(
-        KeyboardButton('Найбільше витрачено на товар'),
-        KeyboardButton('Графік витрат')
-    )
+def main_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    buttons = [
+        "📅 Витрати за сьогодні",
+        "📈 Витрати за тиждень",
+        "🗓 Витрати за місяць",
+        "🔝 Найбільше витрат",
+        "📊 Графік витрат",
+        "🧹 Очистити сьогоднішні витрати"
+    ]
+    markup.add(*[types.KeyboardButton(b) for b in buttons])
     return markup
 
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.send_message(
-        message.chat.id,
-        "Привіт! Я твій Грошовий Інспектор 💸\nВведи витрату у форматі:\nНазва сума\nНаприклад: Кава 50",
-        reply_markup=get_markup()
-    )
+def start_handler(message):
+    bot.send_message(message.chat.id, "👋 Привіт! Введи витрату у форматі: 'Назва 100'", reply_markup=main_keyboard())
 
-@bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    user_id = message.from_user.id
-    text = message.text
-    markup = get_markup()
+@bot.message_handler(func=lambda msg: msg.text == "📅 Витрати за сьогодні")
+def today_expenses(message):
+    total = get_total_by_period(date.today(), date.today())
+    bot.send_message(message.chat.id, f"Сьогодні ти витратив: {total} грн")
 
-    if text == 'Витратив сьогодні':
-        date_from = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        cursor.execute(
-            "SELECT SUM(amount) FROM expenses WHERE user_id = ? AND date >= ?", (user_id, date_from.strftime("%Y-%m-%d %H:%M:%S")))
-        total = cursor.fetchone()[0] or 0
-        bot.send_message(message.chat.id, f"💰 Витратив сьогодні: {total:.2f} грн", reply_markup=markup)
+@bot.message_handler(func=lambda msg: msg.text == "📈 Витрати за тиждень")
+def week_expenses(message):
+    start = date.today() - timedelta(days=7)
+    total = get_total_by_period(start, date.today())
+    bot.send_message(message.chat.id, f"За останній тиждень ти витратив: {total} грн")
 
-    elif text == 'Витратив за тиждень':
-        date_from = datetime.now() - timedelta(days=7)
-        cursor.execute(
-            "SELECT SUM(amount) FROM expenses WHERE user_id = ? AND date >= ?", (user_id, date_from.strftime("%Y-%m-%d %H:%M:%S")))
-        total = cursor.fetchone()[0] or 0
-        bot.send_message(message.chat.id, f"💰 Витратив за останній тиждень: {total:.2f} грн", reply_markup=markup)
+@bot.message_handler(func=lambda msg: msg.text == "🗓 Витрати за місяць")
+def month_expenses(message):
+    start = date.today().replace(day=1)
+    total = get_total_by_period(start, date.today())
+    bot.send_message(message.chat.id, f"Цього місяця ти витратив: {total} грн")
 
-    elif text == 'Витратив за місяць':
-        date_from = datetime.now() - timedelta(days=30)
-        cursor.execute(
-            "SELECT SUM(amount) FROM expenses WHERE user_id = ? AND date >= ?", (user_id, date_from.strftime("%Y-%m-%d %H:%M:%S")))
-        total = cursor.fetchone()[0] or 0
-        bot.send_message(message.chat.id, f"💰 Витратив за останній місяць: {total:.2f} грн", reply_markup=markup)
+@bot.message_handler(func=lambda msg: msg.text == "🔝 Найбільше витрат")
+def top_expense(message):
+    category, amount = get_biggest_category()
+    bot.send_message(message.chat.id, f"🔝 Найбільше ти витратив на: {category} — {amount} грн")
 
-    elif text == 'Найбільше витрачено на товар':
-        cursor.execute(
-            "SELECT category, SUM(amount) as total FROM expenses WHERE user_id = ? GROUP BY category ORDER BY total DESC LIMIT 1",
-            (user_id,))
-        row = cursor.fetchone()
-        if row:
-            bot.send_message(message.chat.id, f"🛒 Найбільше витрачено на: {row[0]} — {row[1]:.2f} грн", reply_markup=markup)
-        else:
-            bot.send_message(message.chat.id, "Поки що немає витрат 😢", reply_markup=markup)
+@bot.message_handler(func=lambda msg: msg.text == "📊 Графік витрат")
+def plot_expenses(message):
+    data = get_today_expenses_grouped()
+    if not data:
+        bot.send_message(message.chat.id, "Сьогодні витрат ще не було.")
+        return
+    categories, amounts = zip(*data)
+    plt.figure(figsize=(8, 6))
+    plt.pie(amounts, labels=categories, autopct='%1.1f%%')
+    plt.title('Сьогоднішні витрати')
+    plt.savefig("chart.png")
+    plt.close()
+    with open("chart.png", 'rb') as photo:
+        bot.send_photo(message.chat.id, photo)
+    os.remove("chart.png")
 
-    elif text == 'Графік витрат':
-        cursor.execute(
-            "SELECT category, SUM(amount) FROM expenses WHERE user_id = ? GROUP BY category",
-            (user_id,))
-        data = cursor.fetchall()
-        if not data:
-            bot.send_message(message.chat.id, "Поки що немає витрат 😢", reply_markup=markup)
-            return
+@bot.message_handler(func=lambda msg: msg.text == "🧹 Очистити сьогоднішні витрати")
+def clear_today(message):
+    clear_today_expenses()
+    bot.send_message(message.chat.id, "Витрати за сьогодні очищено ✅")
 
-        df = pd.DataFrame(data, columns=['Категорія', 'Сума'])
-        plt.figure(figsize=(8, 6))
-        plt.bar(df['Категорія'], df['Сума'], color='orange')
-        plt.title('Витрати по категоріях')
-        plt.xlabel('Категорія')
-        plt.ylabel('Сума, грн')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-
-        buf = BytesIO()
-        plt.savefig(buf, format='png')
-        buf.seek(0)
-        plt.close()
-
-        bot.send_photo(message.chat.id, buf, reply_markup=markup)
-
-    else:
-        category, amount = parse_expense(text)
-        if category and amount:
-            date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("INSERT INTO expenses (user_id, category, amount, date) VALUES (?, ?, ?, ?)",
-                           (user_id, category, amount, date))
-            conn.commit()
-            bot.send_message(message.chat.id, f"✅ Додано: {category} — {amount:.2f} грн", reply_markup=markup)
-        else:
-            bot.send_message(message.chat.id, "⚠️ Формат неправильний. Наприклад: Піца 150", reply_markup=markup)
+@bot.message_handler(func=lambda msg: True)
+def add_expense_handler(message):
+    try:
+        parts = message.text.rsplit(" ", 1)
+        category, amount = parts[0], int(parts[1])
+        add_expense(category, amount)
+        bot.send_message(message.chat.id, f"Додано: {category} — {amount} грн")
+    except:
+        bot.send_message(message.chat.id, "⚠️ Формат неправильний. Наприклад: Піца 150")
 
 bot.infinity_polling()
